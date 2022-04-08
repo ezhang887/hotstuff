@@ -4,6 +4,7 @@ from multiprocessing import Pool
 from os.path import join
 from re import findall, search
 from statistics import mean
+import dateutil.parser
 
 from benchmark.utils import Print
 
@@ -125,7 +126,7 @@ class LogParser:
         return proposals, commits, sizes, samples, timeouts, configs
 
     def _to_posix(self, string):
-        x = datetime.fromisoformat(string.replace('Z', '+00:00'))
+        x = dateutil.parser.isoparse(string.replace('Z', '+00:00'))
         return datetime.timestamp(x)
 
     def _consensus_throughput(self):

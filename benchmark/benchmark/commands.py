@@ -47,7 +47,7 @@ class CommandMaker:
 
     @staticmethod
     def kill():
-        return 'tmux kill-server'
+        return 'tmux kill-session -a'
 
     @staticmethod
     def alias_binaries(origin):
