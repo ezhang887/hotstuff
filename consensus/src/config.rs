@@ -66,10 +66,10 @@ impl Committee {
     }
 
     pub fn quorum_threshold(&self) -> Stake {
-        // If N = 3f + 1 + k (0 <= k < 3)
-        // then (2 N + 3) / 3 = 2f + 1 + (2k + 2)/3 = 2f + 1 + k = N - f
+        // If N = 5f + 1 + k (0 <= k < 5)
+        // then (4 N + 5) / 5 = 4f + 1 + (4k + 4)/5 = 4f + 1 + k = N - f
         let total_votes: Stake = self.authorities.values().map(|x| x.stake).sum();
-        2 * total_votes / 3 + 1
+        4 * total_votes / 5 + 1
     }
 
     pub fn address(&self, name: &PublicKey) -> ConsensusResult<SocketAddr> {
