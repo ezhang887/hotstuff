@@ -12,7 +12,7 @@ use tokio::sync::mpsc::Receiver;
 // Fixture.
 pub fn keys() -> Vec<(PublicKey, SecretKey)> {
     let mut rng = StdRng::from_seed([0; 32]);
-    (0..4).map(|_| generate_keypair(&mut rng)).collect()
+    (0..6).map(|_| generate_keypair(&mut rng)).collect()
 }
 
 // Fixture.
@@ -139,7 +139,7 @@ pub fn qc() -> QC {
     };
     let digest = qc.digest();
     let mut keys = keys();
-    let votes: Vec<_> = (0..3)
+    let votes: Vec<_> = (0..5)
         .map(|_| {
             let (public_key, secret_key) = keys.pop().unwrap();
             (public_key, Signature::new(&digest, &secret_key))
