@@ -1,5 +1,4 @@
 use crate::core::RoundNumber;
-use crate::messages::VoteType;
 use crypto::{CryptoError, Digest, PublicKey};
 use store::StoreError;
 use thiserror::Error;
@@ -66,12 +65,6 @@ pub enum ConsensusError {
 
     #[error("TC and QC conflict")]
     QCTCConflict,
-
-    #[error("Unknown vote type {0}")]
-    UnknownVoteType(VoteType),
-
-    #[error("Invalid vote type {0}, expecting {1}")]
-    InvalidVoteType(VoteType, VoteType),
 
     #[error("Mismatch round number, in TC:{0} <-> in Timeout:{1}")]
     MismatchTCTimeout(RoundNumber, RoundNumber),

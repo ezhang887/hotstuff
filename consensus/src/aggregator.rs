@@ -12,8 +12,7 @@ pub mod aggregator_tests;
 
 pub struct Aggregator {
     committee: Committee,
-    vote1_aggregators: HashMap<RoundNumber, HashMap<Digest, Box<QCMaker>>>,
-    vote2_aggregators: HashMap<RoundNumber, HashMap<Digest, Box<QCMaker>>>,
+    votes_aggregators: HashMap<RoundNumber, HashMap<Digest, Box<QCMaker>>>,
     timeouts_aggregators: HashMap<RoundNumber, Box<TCMaker>>,
 }
 
@@ -21,35 +20,17 @@ impl Aggregator {
     pub fn new(committee: Committee) -> Self {
         Self {
             committee,
-            vote1_aggregators: HashMap::new(),
-            vote2_aggregators: HashMap::new(),
+            votes_aggregators: HashMap::new(),
             timeouts_aggregators: HashMap::new(),
         }
     }
 
-    pub fn add_vote1(&mut self, vote: Vote) -> ConsensusResult<Option<QC>> {
+    pub fn add_vote(&mut self, vote: Vote) -> ConsensusResult<Option<QC>> {
         // TODO: A bad node may make us run out of memory by sending many votes
         // with different round numbers or different digests.
 
-        assert!(vote.vote_type == 1);
-
         // Add the new vote to our aggregator and see if we have a QC.
-        self.vote1_aggregators
-            .entry(vote.round)
-            .or_insert_with(HashMap::new)
-            .entry(vote.digest())
-            .or_insert_with(|| Box::new(QCMaker::new()))
-            .append(vote, &self.committee)
-    }
-
-    pub fn add_vote2(&mut self, vote: Vote) -> ConsensusResult<Option<QC>> {
-        // TODO: A bad node may make us run out of memory by sending many votes
-        // with different round numbers or different digests.
-
-        assert!(vote.vote_type == 2);
-
-        // Add the new vote to our aggregator and see if we have a QC.
-        self.vote2_aggregators
+        self.votes_aggregators
             .entry(vote.round)
             .or_insert_with(HashMap::new)
             .entry(vote.digest())
@@ -69,8 +50,7 @@ impl Aggregator {
     }
 
     pub fn cleanup(&mut self, round: &RoundNumber) {
-        self.vote1_aggregators.retain(|k, _| k >= round);
-        self.vote2_aggregators.retain(|k, _| k >= round);
+        self.votes_aggregators.retain(|k, _| k >= round);
         self.timeouts_aggregators.retain(|k, _| k >= round);
     }
 }
@@ -105,7 +85,6 @@ impl QCMaker {
         if self.weight >= committee.quorum_threshold() {
             self.weight = 0; // Ensures QC is only made once.
             return Ok(Some(QC {
-                vote_type: vote.vote_type,
                 hash: vote.hash.clone(),
                 round: vote.round,
                 votes: self.votes.clone(),

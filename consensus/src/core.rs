@@ -48,8 +48,7 @@ pub struct Core<Mempool> {
     commit_channel: Sender<Block>,
     round: RoundNumber,
     last_voted_round: RoundNumber,
-    locked_vote1_qc: QC,
-    high_qc_vote2: QC,
+    high_qc: QC,
     timer: Timer<RoundNumber>,
     aggregator: Aggregator,
     latest_commit_digest: Option<Digest>,
@@ -85,8 +84,7 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
             core_channel,
             round: 1,
             last_voted_round: 0,
-            locked_vote1_qc: QC::genesis(),
-            high_qc_vote2: QC::genesis(),
+            high_qc: QC::genesis(),
             timer: Timer::new(),
             aggregator,
             latest_commit_digest: Some(Block::genesis().digest()), // TODO: (1) remove option; (2) change to use Digest::default() for genesis block digest for consistency (need to change digest impl for Block)
@@ -133,7 +131,7 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         self.last_voted_round = max(self.last_voted_round, target);
     }
 
-    async fn make_vote1(&mut self, block: &Block) -> Option<Vote> {
+    async fn make_vote(&mut self, block: &Block) -> Option<Vote> {
         // Check if we can vote for this block.
         let safety_rule_1 = block.round > self.last_voted_round;
 
@@ -151,19 +149,14 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         // Ensure we won't vote for contradicting blocks.
         self.increase_last_voted_round(block.round);
         // [issue #15]: Write to storage preferred_round and last_voted_round.
-        Some(Vote::new(1, block.digest(), block.round, self.name, self.signature_service.clone()).await)
+        Some(Vote::new(block.digest(), block.round, self.name, self.signature_service.clone()).await)
     }
     // -- End Safety Module --
 
     // -- Start Pacemaker --
-
-    async fn make_vote2(&mut self, vote1: &Vote) -> Vote {
-        Vote::new(2, vote1.hash.clone(), vote1.round, self.name, self.signature_service.clone()).await
-    }
-
     fn update_high_qc(&mut self, qc: &QC) {
-        if qc.round > self.high_qc_vote2.round {
-            self.high_qc_vote2 = qc.clone();
+        if qc.round > self.high_qc.round {
+            self.high_qc = qc.clone();
         }
     }
 
@@ -171,7 +164,7 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         warn!("Timeout reached for round {}", self.round);
         self.increase_last_voted_round(self.round);
         let timeout = Timeout::new(
-            self.locked_vote1_qc.clone(),
+            self.high_qc.clone(),
             self.round,
             self.name,
             self.signature_service.clone(),
@@ -195,65 +188,48 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         vote.verify(&self.committee)?;
 
         // Add the new vote to our aggregator and see if we have a quorum.
-        if vote.vote_type == 1 {
-            if let Some(qc) = self.aggregator.add_vote1(vote.clone())? {
-                // vote1 QC
-                debug!("Assembled vote1 qc {:?}", qc);
+        if let Some(qc) = self.aggregator.add_vote(vote.clone())? {
+            debug!("Assembled vote qc {:?}", qc);
 
-                // update locked block with vote1 qc
-                self.locked_vote1_qc = qc.clone();
+            if let Some(block) = self
+                .synchronizer
+                .get_block(&qc.hash)
+                .await
+                .expect("Failed to read block") {
 
-                // create and send out vote2
-                let vote2 = self.make_vote2(vote).await;
-                debug!("Created {:?}", vote2);
-                let message = CoreMessage::Vote(vote2.clone());
-                self.transmit(&message, None).await?;
-                self.handle_vote(&vote2).await?;
-            }
-        } else if vote.vote_type == 2 {
-            if let Some(qc) = self.aggregator.add_vote2(vote.clone())? {
-                // vote2 qc
-                debug!("Assembled vote2 qc {:?}", qc);
+                // Only commit qc block here, leave tc block to the process_block for committing
+                if block.qc.is_some() {
 
-                if let Some(block) = self
-                    .synchronizer
-                    .get_block(&qc.hash)
-                    .await
-                    .expect("Failed to read block") {
+                    // block in store => all ancestors should have been committed
+                    // we commit the block here
+                    self.mempool_driver.cleanup(&block).await;
 
-                    // Only commit qc block here, leave tc block to the process_block for committing
-                    if block.qc.is_some() {
+                    if !block.payload.is_empty() {
+                        info!("Committed {}", block);
 
-                        // block in store => all ancestors should have been committed
-                        // we commit the block here
-                        self.mempool_driver.cleanup(&block).await;
-
-                        if !block.payload.is_empty() {
-                            info!("Committed {}", block);
-
-                            #[cfg(feature = "benchmark")]
-                            for x in &block.payload {
-                                info!("Committed B{}({})", block.round, base64::encode(x));
-                            }
+                        #[cfg(feature = "benchmark")]
+                        for x in &block.payload {
+                            info!("Committed B{}({})", block.round, base64::encode(x));
                         }
-                        debug!("Committed {:?}", block);
-                        if let Err(e) = self.commit_channel.send(block.clone()).await {
-                            warn!("Failed to send block through the commit channel: {}", e);
-                        }
-
-                        self.latest_commit_digest = Some(block.digest().clone());
                     }
-                }
+                    debug!("Committed {:?}", block);
+                    if let Err(e) = self.commit_channel.send(block.clone()).await {
+                        warn!("Failed to send block through the commit channel: {}", e);
+                    }
 
-                // Process the QC.
-                self.process_qc(&qc).await;
-
-                // Make a new block if we are the next leader.
-                if self.name == self.leader_elector.get_leader(self.round) {
-                    self.generate_proposal(None).await?;
+                    self.latest_commit_digest = Some(block.digest().clone());
                 }
+            }
+
+            // Process the QC.
+            self.process_qc(&qc).await;
+
+            // Make a new block if we are the next leader.
+            if self.name == self.leader_elector.get_leader(self.round) {
+                self.generate_proposal(None).await?;
             }
         }
+        
         Ok(())
     }
 
@@ -312,7 +288,7 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         if tc.is_some() {
             qc = None;
         } else {
-            qc = Some(self.high_qc_vote2.clone());
+            qc = Some(self.high_qc.clone());
         }
         let payload = self
             .mempool_driver
@@ -373,11 +349,11 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
             }
 
             // See if we can vote for this block (vote1).
-            if let Some(vote1) = self.make_vote1(block).await {
-                debug!("Created {:?}", vote1);
-                let message = CoreMessage::Vote(vote1.clone());
+            if let Some(vote) = self.make_vote(block).await {
+                debug!("Created {:?}", vote);
+                let message = CoreMessage::Vote(vote.clone());
                 self.transmit(&message, None).await?;
-                self.handle_vote(&vote1).await?;
+                self.handle_vote(&vote).await?;
             }
 
             return Ok(());
@@ -467,11 +443,11 @@ impl<Mempool: 'static + NodeMempool> Core<Mempool> {
         }
 
         // See if we can vote for this block (vote1).
-        if let Some(vote1) = self.make_vote1(block).await {
-            debug!("Created {:?}", vote1);
-            let message = CoreMessage::Vote(vote1.clone());
+        if let Some(vote) = self.make_vote(block).await {
+            debug!("Created {:?}", vote);
+            let message = CoreMessage::Vote(vote.clone());
             self.transmit(&message, None).await?;
-            self.handle_vote(&vote1).await?;
+            self.handle_vote(&vote).await?;
         }
         Ok(())
     }
